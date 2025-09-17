@@ -1,0 +1,37 @@
+{
+  "selected_features": [
+    "PROTOCOL",
+    "L4_SRC_PORT",
+    "L4_DST_PORT",
+    "IN_BYTES",
+    "IN_PKTS",
+    "OUT_BYTES",
+    "OUT_PKTS",
+    "FLOW_DURATION_MILLISECONDS",
+    "TCP_FLAGS"
+  ],
+  "categorical": [
+    "PROTOCOL",
+    "TCP_FLAGS"
+  ],
+  "numeric": [
+    "L4_SRC_PORT",
+    "L4_DST_PORT",
+    "IN_BYTES",
+    "IN_PKTS",
+    "OUT_BYTES",
+    "OUT_PKTS",
+    "FLOW_DURATION_MILLISECONDS"
+  ],
+  "class_weight": {
+    "0": 0.528061170606003,
+    "1": 9.40910801656003
+  },
+  "best_params": {
+    "clf__n_estimators": 600,
+    "clf__min_samples_split": 2,
+    "clf__min_samples_leaf": 1,
+    "clf__max_features": null,
+    "clf__max_depth": null
+  }
+}

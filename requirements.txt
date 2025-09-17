@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.5
+python-socketio[asgi]==5.11.3
+scapy==2.5.0
+requests==2.32.3
+pydantic==2.7.4
+pymongo==4.7.2
+joblib==1.4.2
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.1
