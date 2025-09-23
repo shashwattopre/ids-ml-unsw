@@ -4,9 +4,9 @@ An end-to-end Intrusion Detection System trained on NF-UNSW-NB15-v3 with real-ti
 
 ## Setup
 1. Python env & deps: `pip install -r requirements.txt`
-2. Train model: `python train_model.py --data /path/to/NF-UNSW-NB15-v3.csv`
+2. Train model: `python train_model.py --data backend\data\NF-UNSW-NB15-v3.csv`
 3. Backend: `python -m uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000`
-4. Frontend: `npm install && npm run dev` in `frontend/`
+4. Frontend: `streamlit run frontend/streamlit_app.py`
 5. n8n: Import workflow, set webhooks, Mongo, Telegram/SMTP
 
 ## Environment
