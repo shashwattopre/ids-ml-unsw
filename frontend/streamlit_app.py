@@ -7,6 +7,7 @@ import io
 import json
 import altair as alt
 from datetime import datetime, timezone
+import os
 
 BACKEND_URL = "http://localhost:8000"
 
@@ -102,8 +103,24 @@ tabs = st.tabs(["Live Traffic", "Security Alerts", "Traffic Stats", "System Anal
 # ---------- Live Traffic Tab ----------
 with tabs[0]:
     st.subheader("Live Traffic (most recent flows)")
-    limit = st.number_input("Rows to show", min_value=10, max_value=2000, value=200, step=10)
-    auto_refresh = st.checkbox("Auto refresh (1s)", value=True)
+    limit = st.number_input("Rows to show", min_value=10, max_value=5000, value=500, step=10)
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        auto_refresh = st.checkbox("Auto Refresh (1s)", value=True)
+
+    with col2:
+        if st.button("Clear Logs"):
+            import requests
+            try:
+                resp = requests.post("http://localhost:8000/logs/clear")
+                if resp.status_code == 200:
+                    st.success("Logs cleared!")
+                else:
+                    st.error("Failed to clear logs.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+                
     placeholder = st.empty()
 
     # poll and display
@@ -122,9 +139,14 @@ with tabs[0]:
         else:
             df["time"] = pd.NaT
 
+        # select useful columns
+        cols = [c for c in ["time", "SRC_IP", "DST_IP", "PROTOCOL", "L7_PROTO",
+                            "L4_SRC_PORT", "L4_DST_PORT", "IN_BYTES", "OUT_BYTES", "TCP_FLAGS"]
+                if c in df.columns]
+
         # show table
         with placeholder.container():
-            st.dataframe(df.head(100), use_container_width=True)
+            st.dataframe(df[cols].head(limit), width="stretch")
 
             # small chart of bytes
             if "IN_BYTES" in df.columns or "IN_PKTS" in df.columns:
@@ -142,13 +164,16 @@ with tabs[0]:
 
     render_logs_frame()
     if auto_refresh:
-        # simple loop with stop button
-        stop = st.button("Stop Auto-refresh")
-        while auto_refresh and not stop:
-            time.sleep(1)
-            render_logs_frame()
-            # break if user interacts (Streamlit rerun) - safe simple approach
-            break
+        # simple loop with auto-refresh
+        time.sleep(1)
+        render_logs_frame()
+        #break
+        # break if user interacts (Streamlit rerun) - safe simple approach
+        # (no manual stop button needed, since there's already a checkbox)
+    else:
+        # Manual refresh button when auto-refresh is disabled
+        if st.button("Refresh Dashboard"):
+            st.rerun()
 
 # ---------- Security Alerts Tab ----------
 with tabs[1]:
@@ -162,9 +187,21 @@ with tabs[1]:
             alerts_placeholder.info("No alerts yet.")
             return
         adf = pd.DataFrame(alerts)
+
+        adf = adf.rename(columns={
+            "TIME": "timestamp",
+            "time": "timestamp",
+            "Time": "timestamp",
+            "alertType": "alert_type",
+            "severity": "severity",
+            "details": "details",
+            "src_ip": "src_ip",
+            "dst_ip": "dst_ip"
+        })
+
         # show key columns if exist
-        cols = [c for c in ["timestamp", "alert_type", "severity", "details"] if c in adf.columns]
-        alerts_placeholder.dataframe(adf[cols].sort_values(by="timestamp", ascending=False).head(500), use_container_width=True)
+        cols = [c for c in ["timestamp", "src_ip", "dst_ip", "alert_type", "severity", "details"] if c in adf.columns]
+        alerts_placeholder.dataframe(adf[cols].sort_values(by="timestamp", ascending=False).head(500), width="stretch")
 
     render_alerts()
 
@@ -189,13 +226,59 @@ with tabs[2]:
 
     # small bar chart: alerts by severity
     alerts = fetch_alerts(limit=1000)
+    adf = pd.DataFrame(alerts)
     if alerts:
-        adf = pd.DataFrame(alerts)
         if "severity" in adf.columns:
             sev = adf["severity"].value_counts().reset_index()
             sev.columns = ["severity", "count"]
             bar = alt.Chart(sev).mark_bar().encode(x="severity", y="count")
             st.altair_chart(bar, use_container_width=True)
+
+    # Protocol distribution
+    if "PROTOCOL" in adf.columns:
+        proto_counts = adf["PROTOCOL"].value_counts().reset_index()
+        proto_counts.columns = ["PROTOCOL", "count"]
+    else:
+        proto_counts = pd.DataFrame(columns=["PROTOCOL", "count"])
+
+    if not proto_counts.empty:
+        proto_chart = alt.Chart(proto_counts).mark_arc().encode(
+            theta="count",
+            color="PROTOCOL",
+            tooltip=["PROTOCOL", "count"]
+        )
+        st.altair_chart(proto_chart, use_container_width=True)
+    else:
+        st.info("No protocol distribution data yet.")
+
+    # L7 Proto distribution
+    if "L7_PROTO" in adf.columns:
+        l7_counts = adf["L7_PROTO"].value_counts().reset_index()
+        l7_counts.columns = ["L7 Proto", "count"]
+
+        l7_chart = alt.Chart(l7_counts).mark_arc().encode(
+            theta="count",
+            color="L7 Proto",
+            tooltip=["L7 Proto", "count"]
+        )
+        st.altair_chart(l7_chart, use_container_width=True)
+
+    # Normal vs Alerts pie chart
+    alerts = pd.read_csv("./backend/data/alerts.csv") if os.path.exists("./backend/data/alerts.csv") else pd.DataFrame()
+
+    alert_count = len(alerts)
+    normal_count = len(adf) - alert_count
+    dist_df = pd.DataFrame({
+        "Category": ["Normal Traffic", "Alerts"],
+        "Count": [normal_count, alert_count]
+    })
+
+    alert_chart = alt.Chart(dist_df).mark_arc().encode(
+        theta="Count",
+        color="Category",
+        tooltip=["Category", "Count"]
+    )
+    st.altair_chart(alert_chart, use_container_width=True)
 
 # ---------- System Analysis Tab ----------
 with tabs[3]:

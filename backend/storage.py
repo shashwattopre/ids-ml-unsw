@@ -1,6 +1,5 @@
 import csv
 import os
-import time
 from typing import Dict, Any
 from .settings import SETTINGS
 
@@ -17,24 +16,46 @@ if SETTINGS.mongo_uri and MongoClient:
     except Exception:
         _mongo = None
 
+# -------------------------
+# Define fixed schemas
+# -------------------------
+LOG_FIELDS = [
+    "timestamp", "src_ip", "dst_ip", "src_port", "dst_port",
+    "protocol", "l7_proto", "in_bytes", "out_bytes", "in_pkts", "out_pkts",
+    "tcp_flags", "flow_duration_ms", "malicious_prob"
+]
+
+ALERT_FIELDS = [
+    "timestamp", "src_ip", "dst_ip", "src_port", "dst_port",
+    "protocol", "l7_proto", "malicious_prob", "severity", "details"
+]
+
+
 def _ensure_csv(path: str, header: list[str]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not os.path.exists(path):
-        with open(path, 'w', newline='') as f:
+        with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(header)
 
 
+def _normalize_row(row: Dict[str, Any], fields: list[str]) -> Dict[str, Any]:
+    """Fill missing fields with empty values so schema stays consistent."""
+    return {field: row.get(field, "") for field in fields}
+
+
 def write_log_csv(row: Dict[str, Any]):
-    _ensure_csv(SETTINGS.local_logs, list(row.keys()))
-    with open(SETTINGS.local_logs, 'a', newline='') as f:
-        csv.DictWriter(f, fieldnames=row.keys()).writerow(row)
+    _ensure_csv(SETTINGS.local_logs, LOG_FIELDS)
+    row = _normalize_row(row, LOG_FIELDS)
+    with open(SETTINGS.local_logs, "a", newline="") as f:
+        csv.DictWriter(f, fieldnames=LOG_FIELDS).writerow(row)
 
 
 def write_alert_csv(row: Dict[str, Any]):
-    _ensure_csv(SETTINGS.local_alerts, list(row.keys()))
-    with open(SETTINGS.local_alerts, 'a', newline='') as f:
-        csv.DictWriter(f, fieldnames=row.keys()).writerow(row)
+    _ensure_csv(SETTINGS.local_alerts, ALERT_FIELDS)
+    row = _normalize_row(row, ALERT_FIELDS)
+    with open(SETTINGS.local_alerts, "a", newline="") as f:
+        csv.DictWriter(f, fieldnames=ALERT_FIELDS).writerow(row)
 
 
 def write_mongo(collection: str, doc: Dict[str, Any]):
@@ -45,30 +66,37 @@ def write_mongo(collection: str, doc: Dict[str, Any]):
             pass
 
 
-# backend/storage.py (append these helpers)
-import os
+# -------------------------
+# Read helpers
+# -------------------------
 import pandas as pd
 
 def read_latest_logs(limit=200):
-    csv_path = os.path.join("backend", "data", "logs.csv")
+    csv_path = SETTINGS.local_logs
     if not os.path.exists(csv_path):
         return []
-    df = pd.read_csv(csv_path)
+    try:
+        df = pd.read_csv(csv_path)
+    except pd.errors.EmptyDataError:
+        return []
     return df.tail(limit).to_dict(orient="records")[::-1]
+
 
 def read_latest_alerts(limit=200):
-    csv_path = os.path.join("backend", "data", "alerts.csv")
+    csv_path = SETTINGS.local_alerts
     if not os.path.exists(csv_path):
         return []
-    df = pd.read_csv(csv_path)
+    try:
+        df = pd.read_csv(csv_path)
+    except pd.errors.EmptyDataError:
+        return []
     return df.tail(limit).to_dict(orient="records")[::-1]
 
+
 def stats():
-    # quick stats: counts
     logs = read_latest_logs(limit=100000)
     alerts = read_latest_alerts(limit=100000)
     total_flows = len(logs)
     total_alerts = len(alerts)
-    # basic throughput estimate (if fields exist)
-    avg_bps = None
+    avg_bps = None  # TODO: compute from in/out_bytes if needed
     return {"total_flows": total_flows, "total_alerts": total_alerts, "avg_bps": avg_bps}

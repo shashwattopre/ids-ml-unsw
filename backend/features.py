@@ -1,3 +1,4 @@
+import datetime
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -59,6 +60,9 @@ class FlowExtractor:
         dur = max((st.last_ts - st.first_ts) * 1000.0, 1e-3)  # ms
         if dur >= self.window_sec * 1000:
             feats = {
+                'TIME': datetime.datetime.fromtimestamp(ts).isoformat(),  # <-- NEW
+                'SRC_IP': src,                # <-- add
+                'DST_IP': dst,                # <-- add
                 'PROTOCOL': st.proto,
                 'L7_PROTO': st.l7_proto,
                 'L4_SRC_PORT': int(sport),

@@ -1,0 +1,95 @@
+{
+  "name": "IDS Logs & Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ids-traffic-logs",
+        "options": {}
+      },
+      "name": "Webhook (Traffic Logs)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "path": "ids-alerts",
+        "options": {}
+      },
+      "name": "Webhook (Alerts)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "traffic_logs",
+        "fields": "={{$json}}"
+      },
+      "name": "MongoDB Insert Logs",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "credentials": {
+        "mongoDb": "Your MongoDB Connection"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "security_alerts",
+        "fields": "={{$json}}"
+      },
+      "name": "MongoDB Insert Alerts",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1,
+      "position": [500, 500],
+      "credentials": {
+        "mongoDb": "Your MongoDB Connection"
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "🚨 IDS Alert!\n\nType: {{$json[\"alert_type\"]}}\nSeverity: {{$json[\"severity\"]}}\nDetails: {{$json[\"details\"]}}\nTime: {{$json[\"timestamp\"]}}"
+      },
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [750, 500],
+      "credentials": {
+        "telegramApi": "Your Telegram Bot"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook (Traffic Logs)": {
+      "main": [
+        [
+          {
+            "node": "MongoDB Insert Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (Alerts)": {
+      "main": [
+        [
+          {
+            "node": "MongoDB Insert Alerts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
