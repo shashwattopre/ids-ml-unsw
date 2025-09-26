@@ -1,4 +1,7 @@
 # backend/settings.py
+#from dotenv import load_dotenv
+#load_dotenv()  # optional: allows .env file values to be read into env
+
 try:
     # pydantic v2 has a separate package 'pydantic-settings'
     from pydantic_settings import BaseSettings
@@ -10,9 +13,14 @@ except Exception:
 class Settings(BaseSettings):
     model_path: str = "./model/pipeline.joblib"
     schema_path: str = "./model/feature_schema.json"
+
+    # local data directory and CSV paths
     data_dir: str = "data"
     local_alerts: str = "data/alerts.csv"
     local_logs: str = "data/logs.csv"
+
+    # threshold: unified source of truth for alerts (0.0 - 1.0)
+    alert_threshold: float = 0.85
 
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db: str = "ids_db"

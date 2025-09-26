@@ -2,6 +2,7 @@ import csv
 import os
 from typing import Dict, Any
 from .settings import SETTINGS
+import pymongo
 
 # Optional Mongo support
 try:
@@ -22,13 +23,21 @@ if SETTINGS.mongo_uri and MongoClient:
 LOG_FIELDS = [
     "timestamp", "src_ip", "dst_ip", "src_port", "dst_port",
     "protocol", "l7_proto", "in_bytes", "out_bytes", "in_pkts", "out_pkts",
-    "tcp_flags", "flow_duration_ms", "malicious_prob"
+    "tcp_flags", "flow_duration_ms", "malicious_prob", "DIRECTION"
 ]
 
 ALERT_FIELDS = [
     "timestamp", "src_ip", "dst_ip", "src_port", "dst_port",
     "protocol", "l7_proto", "malicious_prob", "severity", "details"
 ]
+
+# -------------------------
+# Ignore list (imported from app)
+# -------------------------
+try:
+    from .app import IGNORE_IPS
+except Exception:
+    IGNORE_IPS = set()
 
 
 def _ensure_csv(path: str, header: list[str]):
@@ -44,7 +53,19 @@ def _normalize_row(row: Dict[str, Any], fields: list[str]) -> Dict[str, Any]:
     return {field: row.get(field, "") for field in fields}
 
 
+def _is_ignored(row: Dict[str, Any]) -> bool:
+    """Check if row involves an ignored IP."""
+    src = row.get("src_ip")
+    dst = row.get("dst_ip")
+    return (src in IGNORE_IPS) or (dst in IGNORE_IPS)
+
+
+# -------------------------
+# Write helpers
+# -------------------------
 def write_log_csv(row: Dict[str, Any]):
+    if _is_ignored(row):
+        return
     _ensure_csv(SETTINGS.local_logs, LOG_FIELDS)
     row = _normalize_row(row, LOG_FIELDS)
     with open(SETTINGS.local_logs, "a", newline="") as f:
@@ -52,18 +73,21 @@ def write_log_csv(row: Dict[str, Any]):
 
 
 def write_alert_csv(row: Dict[str, Any]):
+    if _is_ignored(row):
+        return
     _ensure_csv(SETTINGS.local_alerts, ALERT_FIELDS)
     row = _normalize_row(row, ALERT_FIELDS)
     with open(SETTINGS.local_alerts, "a", newline="") as f:
         csv.DictWriter(f, fieldnames=ALERT_FIELDS).writerow(row)
 
 
-def write_mongo(collection: str, doc: Dict[str, Any]):
-    if _mongo:
-        try:
-            _mongo[SETTINGS.mongo_db][collection].insert_one(doc)
-        except Exception:
-            pass
+def write_mongo(db_name, doc):
+    if _is_ignored(doc):
+        return
+    col_name = "alerts" if "severity" in doc else "logs"
+    client = pymongo.MongoClient(SETTINGS.mongo_uri)
+    db = client[db_name]
+    db[col_name].insert_one(doc)
 
 
 # -------------------------

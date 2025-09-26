@@ -5,6 +5,8 @@ from typing import Callable
 from .features import FlowExtractor 
 from .utils import write_csv_row
 import os
+import psutil
+import logging
 
 class CaptureThread: 
     def __init__(self, iface: str | None, bpf_filter: str | None, callback: Callable[[dict, str, str], None]): 
@@ -15,6 +17,19 @@ class CaptureThread:
         self._stop = threading.Event() 
         self._thr: threading.Thread | None = None 
         self._stop_flag = False
+
+        # Detect local IPs bound to this interface
+        logger = logging.getLogger("ids.app")
+        self.local_ips = set()
+        try:
+            addrs = psutil.net_if_addrs().get(iface, [])
+            for addr in addrs:
+                if addr.family.name in ("AF_INET", "AF_INET6"):  # IPv4/IPv6
+                    self.local_ips.add(addr.address)
+        except Exception as e:
+            logger.warning(f"Failed to detect local IPs for {iface}: {e}")
+
+        logger.info(f"CaptureThread on iface={iface} local_ips={self.local_ips}")
         
     def _handle_packet(self, pkt):
         try:

@@ -11,14 +11,62 @@ import time
 import json 
 import os 
 import csv
+import logging
+from pathlib import Path
 
 from backend.capture import CaptureThread
 capture_thread = None  # will be created dynamically
+
+# logging config
+logger = logging.getLogger("ids.app")
+if not logger.handlers:
+    # basic config if the application hasn't configured logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+IGNORE_FILE = Path("./backend/data/ignored_ips.json")
+IGNORE_IPS = set()
+
+def _load_ignore_file():
+    global IGNORE_IPS
+    if IGNORE_FILE.exists():
+        try:
+            with open(IGNORE_FILE, "r") as f:
+                data = json.load(f)
+                IGNORE_IPS = set(data.get("ignored", []))
+        except Exception:
+            IGNORE_IPS = set()
+
+def _save_ignore_file():
+    IGNORE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(IGNORE_FILE, "w") as f:
+        json.dump({"ignored": list(IGNORE_IPS)}, f)
+
+# Load once at startup
+_load_ignore_file()
+
 
 # === Callback for captured features ===
 def handle_features(feats: dict):
     if not feats:
         return
+    
+    # ignore if src or dst IP is in ignore list
+    src_ip = feats.get("SRC_IP")
+    dst_ip = feats.get("DST_IP")
+
+    # Skip ignored IPs
+    if src_ip in IGNORE_IPS or dst_ip in IGNORE_IPS:
+        logger.debug(f"Ignored flow {src_ip} -> {dst_ip}")
+        return
+    
+    # Ensure direction is included
+    local_ips = capture_thread.local_ips if capture_thread else set()
+    if src_ip in local_ips:
+        feats["DIRECTION"] = "outgoing"
+    elif dst_ip in local_ips:
+        feats["DIRECTION"] = "incoming"
+    else:
+        feats["DIRECTION"] = "unknown"
 
     # 1. Log to storage or fallback CSV
     if storage_mod and hasattr(storage_mod, "log_flow"):
@@ -55,6 +103,21 @@ def handle_features(feats: dict):
                     if f.tell() == 0:
                         writer.writeheader()
                     writer.writerow(alert)
+
+                # write to Mongo if storage exposes write_mongo
+                try:
+                    if storage_mod and hasattr(storage_mod, "write_mongo"):
+                        doc = {
+                            "timestamp": alert.get("timestamp", time.time()),
+                            "src_ip": alert.get("src_ip"),
+                            "dst_ip": alert.get("dst_ip"),
+                            "score": alert.get("malicious_prob"),
+                            "severity": alert.get("severity"),
+                            "details": feats,
+                        }
+                        storage_mod.write_mongo(getattr(SETTINGS, "mongo_db", "ids_db"), doc)
+                except Exception:
+                    logger.exception("storage.write_mongo failed")
 
                 # also call storage if available
                 if storage_mod and hasattr(storage_mod, "log_alert"):
@@ -148,6 +211,30 @@ async def stop_capture():
         return {"status": "capture stopped"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop capture: {e}")
+    
+
+@app.post("/ignore/add")
+def add_ignore_ip(body: dict = Body(...)):
+    ip = body.get("ip")
+    if not ip:
+        raise HTTPException(status_code=400, detail="No IP provided")
+    IGNORE_IPS.add(ip)
+    _save_ignore_file()
+    return {"ignored": list(IGNORE_IPS)}
+
+@app.post("/ignore/remove")
+def remove_ignore_ip(body: dict = Body(...)):
+    ip = body.get("ip")
+    if not ip:
+        raise HTTPException(status_code=400, detail="No IP provided")
+    IGNORE_IPS.discard(ip)
+    _save_ignore_file()
+    return {"ignored": list(IGNORE_IPS)}
+
+@app.get("/ignore/list")
+def list_ignore_ips():
+    return {"ignored": list(IGNORE_IPS)}
+
     
 @app.get("/logs/recent")
 def logs_recent(limit: int = 200):

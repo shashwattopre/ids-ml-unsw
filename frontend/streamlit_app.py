@@ -98,7 +98,7 @@ st.sidebar.write("n8n & Mongo should be running (backend will forward logs).")
 
 # ---------- Main layout ----------
 st.title("IDS Dashboard (Streamlit)")
-tabs = st.tabs(["Live Traffic", "Security Alerts", "Traffic Stats", "System Analysis"])
+tabs = st.tabs(["Live Traffic", "Security Alerts", "Traffic Stats", "System Analysis", "Settings"])
 
 # ---------- Live Traffic Tab ----------
 with tabs[0]:
@@ -131,6 +131,7 @@ with tabs[0]:
             return
 
         df = pd.DataFrame(logs)
+
         # normalize timestamp if present
         if "FLOW_START_MILLISECONDS" in df.columns:
             df["time"] = pd.to_datetime(df["FLOW_START_MILLISECONDS"], unit="ms", errors="coerce")
@@ -140,38 +141,19 @@ with tabs[0]:
             df["time"] = pd.NaT
 
         # select useful columns
-        cols = [c for c in ["time", "SRC_IP", "DST_IP", "PROTOCOL", "L7_PROTO",
-                            "L4_SRC_PORT", "L4_DST_PORT", "IN_BYTES", "OUT_BYTES", "TCP_FLAGS"]
+        cols = [c for c in ["TIME", "SRC_IP", "DST_IP", "PROTOCOL", "L7_PROTO",
+                            "L4_SRC_PORT", "L4_DST_PORT", "IN_BYTES", "OUT_BYTES", "TCP_FLAGS", "DIRECTION"]
                 if c in df.columns]
 
         # show table
         with placeholder.container():
             st.dataframe(df[cols].head(limit), width="stretch")
 
-            # small chart of bytes
-            if "IN_BYTES" in df.columns or "IN_PKTS" in df.columns:
-                display_df = df.copy()
-                # pick a bytes column if available
-                bytes_col = "IN_BYTES" if "IN_BYTES" in df.columns else ( "bytes_tot" if "bytes_tot" in df.columns else None)
-                if bytes_col:
-                    display_df["time_str"] = display_df["time"].dt.strftime("%H:%M:%S")
-                    chart_df = display_df.tail(50)[["time_str", bytes_col]].rename(columns={bytes_col: "bytes"})
-                    chart = alt.Chart(chart_df).mark_line(point=True).encode(
-                        x="time_str",
-                        y="bytes"
-                    ).properties(height=250)
-                    st.altair_chart(chart, use_container_width=True)
-
     render_logs_frame()
     if auto_refresh:
-        # simple loop with auto-refresh
         time.sleep(1)
         render_logs_frame()
-        #break
-        # break if user interacts (Streamlit rerun) - safe simple approach
-        # (no manual stop button needed, since there's already a checkbox)
     else:
-        # Manual refresh button when auto-refresh is disabled
         if st.button("Refresh Dashboard"):
             st.rerun()
 
@@ -187,21 +169,12 @@ with tabs[1]:
             alerts_placeholder.info("No alerts yet.")
             return
         adf = pd.DataFrame(alerts)
+        #print(alerts)   #for debugging only
 
-        adf = adf.rename(columns={
-            "TIME": "timestamp",
-            "time": "timestamp",
-            "Time": "timestamp",
-            "alertType": "alert_type",
-            "severity": "severity",
-            "details": "details",
-            "src_ip": "src_ip",
-            "dst_ip": "dst_ip"
-        })
 
         # show key columns if exist
-        cols = [c for c in ["timestamp", "src_ip", "dst_ip", "alert_type", "severity", "details"] if c in adf.columns]
-        alerts_placeholder.dataframe(adf[cols].sort_values(by="timestamp", ascending=False).head(500), width="stretch")
+        cols = [c for c in ["TIME", "SRC_IP", "DST_IP", "PROTOCOL", 'FLOW_DURATION_MILLISECONDS', 'MALICIOUS_PROB'] if c in adf.columns]
+        alerts_placeholder.dataframe(adf[cols].sort_values(by="TIME", ascending=False).head(500), width="stretch")
 
     render_alerts()
 
@@ -298,3 +271,41 @@ with tabs[3]:
 st.sidebar.markdown("---")
 st.sidebar.write(f"Backend: {BACKEND_URL}")
 st.sidebar.write(f"Last update: {datetime.now(timezone.utc).isoformat()} UTC")
+
+
+with tabs[4]:  # Settings
+    st.header("Settings")
+    st.subheader("Ignored IP Management")
+
+    try:
+        resp = requests.get(f"{BACKEND_URL}/ignore/list")
+        ignored_ips = resp.json().get("ignored", [])
+    except Exception as e:
+        ignored_ips = []
+        st.error(f"Failed to fetch ignore list: {e}")
+
+    st.write("Currently ignored IPs:", ignored_ips if ignored_ips else "None")
+
+    # Add IP
+    with st.form("add_ignore_form"):
+        add_ip = st.text_input("IP to ignore")
+        if st.form_submit_button("Add to ignore list"):
+            if add_ip:
+                try:
+                    r = requests.post(f"{BACKEND_URL}/ignore/add", json={"ip": add_ip})
+                    st.success(f"Added {add_ip} to ignore list")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
+    # Remove IP
+    with st.form("remove_ignore_form"):
+        remove_ip = st.selectbox("IP to remove", ignored_ips if ignored_ips else ["None"])
+        if st.form_submit_button("Remove from ignore list"):
+            if remove_ip and remove_ip != "None":
+                try:
+                    r = requests.post(f"{BACKEND_URL}/ignore/remove", json={"ip": remove_ip})
+                    st.success(f"Removed {remove_ip} from ignore list")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
