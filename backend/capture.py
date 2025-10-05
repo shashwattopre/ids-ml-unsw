@@ -1,150 +1,172 @@
-from scapy.all import sniff, TCP, UDP, IP 
-import threading 
-import time 
-from typing import Callable 
-from .features import FlowExtractor 
-from .utils import write_csv_row
+# Fixed capture.py - COMPLETE WORKING VERSION
+
+from scapy.all import sniff, AsyncSniffer, TCP, UDP, IP
+import threading
+import time
+import logging
+from typing import Callable
+from .features import FlowExtractor
 import os
 import psutil
-import logging
 
-class CaptureThread: 
-    def __init__(self, iface: str | None, bpf_filter: str | None, callback: Callable[[dict, str, str], None]): 
-        self.iface = iface 
-        self.bpf_filter = bpf_filter 
-        self.callback = callback 
-        self.fx = FlowExtractor() 
-        self._stop = threading.Event() 
-        self._thr: threading.Thread | None = None 
-        self._stop_flag = False
+logger = logging.getLogger(__name__)
 
-        # Detect local IPs bound to this interface
-        logger = logging.getLogger("ids.app")
-        self.local_ips = set()
-        try:
-            addrs = psutil.net_if_addrs().get(iface, [])
-            for addr in addrs:
-                if addr.family.name in ("AF_INET", "AF_INET6"):  # IPv4/IPv6
-                    self.local_ips.add(addr.address)
-        except Exception as e:
-            logger.warning(f"Failed to detect local IPs for {iface}: {e}")
-
-        logger.info(f"CaptureThread on iface={iface} local_ips={self.local_ips}")
+class CaptureThread:
+    def __init__(self, iface: str = None, bpffilter: str = None, callback: Callable[[dict], str] = None):
+        self.iface = iface
+        self.bpffilter = bpffilter
+        self.callback = callback
         
-    def _handle_packet(self, pkt):
+        # Initialize flow extractor
+        self.fx = FlowExtractor()
+        self.stop_flag = False
+        self.stop = threading.Event()
+        self.thr = threading.Thread()
+        self.sniffer = None
+        self.local_ips = set()
+        
+        # Get local IP addresses for traffic direction detection
+        self.update_local_ips()
+    
+    def update_local_ips(self):
+        """Get local IP addresses for traffic direction detection"""
         try:
-            ts = pkt.time
-            size = len(pkt)
-
-            # Extract basic fields
-            src, dst, sport, dport, proto, flags, l7_proto = None, None, None, None, None, None, "UNKNOWN"
-
-            if pkt.haslayer("IP"):
-                ip = pkt["IP"]
-                src, dst = ip.src, ip.dst
-                proto = ip.proto
-
-            if pkt.haslayer("TCP"):
-                tcp = pkt["TCP"]
-                sport, dport = tcp.sport, tcp.dport
-                proto = "TCP"
-                flags = str(tcp.flags)
-
-                # Simple L7 guesses for TCP
-                if sport == 80 or dport == 80:
-                    l7_proto = "HTTP"
-                elif sport == 443 or dport == 443:
-                    l7_proto = "HTTPS"
-                elif sport == 22 or dport == 22:
-                    l7_proto = "SSH"
-                elif sport == 21 or dport == 21:
-                    l7_proto = "FTP"
-
-            elif pkt.haslayer("UDP"):
-                udp = pkt["UDP"]
-                sport, dport = udp.sport, udp.dport
-                proto = "UDP"
-
-                # Simple L7 guesses for UDP
-                if sport == 53 or dport == 53:
-                    l7_proto = "DNS"
-                elif sport == 123 or dport == 123:
-                    l7_proto = "NTP"
-                elif sport == 67 or dport == 68:
-                    l7_proto = "DHCP"
-
-            # Skip if missing required fields
-            if not all([src, dst, sport, dport, proto]):
+            for interface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == 2:  # IPv4
+                        self.local_ips.add(addr.address)
+        except Exception as e:
+            logger.warning(f"Could not get local IPs: {e}")
+        self.local_ips.add("127.0.0.1")  # Always add localhost
+    
+    def extract_packet_info(self, pkt) -> tuple:
+        """Enhanced packet information extraction"""
+        try:
+            if IP in pkt:
+                ip_layer = pkt[IP]
+                src, dst = ip_layer.src, ip_layer.dst
+                proto = ip_layer.proto
+                size = len(pkt)
+                ttl = ip_layer.ttl
+                
+                sport = dport = 0
+                flags = None
+                tcp_window = None
+                
+                if TCP in pkt:
+                    tcp_layer = pkt[TCP]
+                    sport, dport = tcp_layer.sport, tcp_layer.dport
+                    flags = str(tcp_layer.flags)
+                    tcp_window = tcp_layer.window
+                    proto_name = "TCP"
+                elif UDP in pkt:
+                    udp_layer = pkt[UDP]
+                    sport, dport = udp_layer.sport, udp_layer.dport
+                    proto_name = "UDP"
+                else:
+                    proto_name = f"IP-{proto}"
+                
+                return (src, sport, dst, dport, proto_name, size, flags, ttl, tcp_window)
+        except Exception as e:
+            logger.debug(f"Packet parsing error: {e}")
+        return None
+    
+    def handle_packet(self, pkt):
+        """Enhanced packet handling with additional features"""
+        try:
+            packet_info = self.extract_packet_info(pkt)
+            if not packet_info:
                 return
-
-            # Direction: incoming vs outgoing
-            import socket
-            local_ips = socket.gethostbyname_ex(socket.gethostname())[2]
-            if dst in local_ips:
-                direction = "in"
-            else:
-                direction = "out"
-
-            # Update flow features
+                
+            src, sport, dst, dport, proto, size, flags, ttl, tcp_window = packet_info
+            
+            # Determine direction
+            direction = "unknown"
+            if src in self.local_ips:
+                direction = "outgoing"
+            elif dst in self.local_ips:
+                direction = "incoming"
+            
+            ts = time.time()
+            
+            # Update flow extractor with enhanced features
             feats = self.fx.update(
-                src, sport, dst, dport, proto, size, direction, flags, ts, l7_proto
+                src=src, sport=sport, dst=dst, dport=dport, proto=proto,
+                size=size, direction=direction, flags=flags, ts=ts,
+                ttl=ttl, tcp_window=tcp_window
             )
-
+            
             if feats and self.callback:
                 self.callback(feats)
-                print("Captured features:", feats) # for debugging
-
+                logger.debug(f"Captured enhanced features: {len(feats)} fields")
+                
         except Exception as e:
-            print(f"Error handling packet: {e}")
- 
-    def start(self): 
-        self._stop.clear() 
-        self._thr = threading.Thread(target=self._run, daemon=True) 
-        self._thr.start() 
+            logger.error(f"Error handling packet: {e}")
+    
+    def start(self):
+        """Start enhanced packet capture"""
+        self.stop.clear()
         
-    def _run(self): 
-        sniff(prn=self._handle_packet, store=False, iface=self.iface, filter=self.bpf_filter, stop_filter=lambda x: self._stop.is_set()) 
-        
-    def stop(self): 
-        self._stop.set()
-
-
-# --- monkeypatch: prefer AsyncSniffer for responsive stop() if available ---
-try:
-    from scapy.all import AsyncSniffer
-except Exception:
-    AsyncSniffer = None
-
-def _ids_start(self):
-    # If AsyncSniffer exists, prefer it; otherwise fall back to existing start implementation.
-    if AsyncSniffer is not None:
-        if getattr(self, "_sniffer", None) and getattr(self._sniffer, "running", False):
-            return
+        # Try AsyncSniffer first (non-blocking)
         try:
-            self._sniffer = AsyncSniffer(prn=self._handle_packet, store=False, iface=self.iface, filter=self.bpf_filter)
-            self._sniffer.start()
+            self.sniffer = AsyncSniffer(
+                prn=self.handle_packet,
+                store=False,
+                iface=self.iface,
+                filter=self.bpffilter
+            )
+            self.sniffer.start()
+            logger.info(f"Started enhanced async packet capture on {self.iface}")
             return
-        except Exception:
-            # fallback to old threaded start below
-            pass
-    # original fallback: start thread that runs self._run()
-    if getattr(self, "_thr", None) and getattr(self._thr, "is_alive", lambda: False)():
-        return
-    self._stop.clear()
-    self._thr = threading.Thread(target=self._run, daemon=True)
-    self._thr.start()
+        except Exception as e:
+            logger.warning(f"AsyncSniffer failed: {e}, falling back to threaded capture")
+        
+        # Fallback to threaded capture
+        self.thr = threading.Thread(target=self.run, daemon=True)
+        self.thr.start()
+        logger.info(f"Started enhanced threaded packet capture on {self.iface}")
+    
+    def run(self):
+        """Threaded packet capture loop"""
+        try:
+            sniff(
+                prn=self.handle_packet,
+                store=False,
+                iface=self.iface,
+                filter=self.bpffilter,
+                stop_filter=lambda x: self.stop.is_set()
+            )
+        except Exception as e:
+            logger.error(f"Capture thread error: {e}")
+    
+    def stop_capture(self):
+        """Stop packet capture"""
+        try:
+            if self.sniffer:
+                try:
+                    self.sniffer.stop()
+                except Exception:
+                    pass
+                self.sniffer = None
+            
+            self.stop.set()
+            if self.thr and self.thr.is_alive():
+                self.thr.join(timeout=2)
+            
+            logger.info("Enhanced packet capture stopped")
+        except Exception as e:
+            logger.error(f"Error stopping capture: {e}")
+    
+    def is_running(self) -> bool:
+        """Check if capture is running"""
+        if self.sniffer:
+            return getattr(self.sniffer, 'running', False)
+        return self.thr and self.thr.is_alive() if self.thr else False
 
-def _ids_stop(self):
+def list_interfaces():
+    """List available network interfaces"""
     try:
-        if getattr(self, "_sniffer", None):
-            try:
-                self._sniffer.stop()
-            except Exception:
-                pass
-            self._sniffer = None
-    finally:
-        self._stop.set()
-
-# attach monkeypatch to the class
-CaptureThread.start = _ids_start
-CaptureThread.stop = _ids_stop
+        return list(psutil.net_if_addrs().keys())
+    except Exception as e:
+        logger.error(f"Failed to list interfaces: {e}")
+        return ["eth0", "wlan0", "lo"]  # Common defaults
