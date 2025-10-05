@@ -11,13 +11,13 @@ except Exception:
 
 
 class Settings(BaseSettings):
-    model_path: str = "./model/pipeline.joblib"
-    schema_path: str = "./model/feature_schema.json"
+    model_path: str = "./model/enhanced_pipeline.joblib"
+    schema_path: str = "./model/enhanced_schema.json"
 
     # local data directory and CSV paths
-    data_dir: str = "data"
-    local_alerts: str = "data/alerts.csv"
-    local_logs: str = "data/logs.csv"
+    data_dir: str = "./backend/data"
+    local_alerts: str = "./backend/data/alerts.csv"
+    local_logs: str = "./backend/data/logs.csv"
 
     # threshold: unified source of truth for alerts (0.0 - 1.0)
     alert_threshold: float = 0.85
